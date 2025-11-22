@@ -13,9 +13,214 @@ import torch
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+from datetime import datetime 
+import streamlit as st
 
-# Load environment variables
+# Load environment variables first
 load_dotenv()
+
+# Import Kaggle only when needed (lazy import to avoid auto-authentication)
+try:
+    from kaggle.api.kaggle_api_extended import KaggleApi
+    KAGGLE_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Kaggle API not available: {str(e)}")
+    KAGGLE_AVAILABLE = False
+
+
+
+
+@st.cache_resource(show_spinner="Loading Gap Analysis Engine (Flan-T5-Large)... This may take 1-2 minutes on first run")
+def load_gap_analyzer():
+    """Load and cache the Gap Analysis Engine"""
+    print("🔄 Initializing Gap Analysis Engine...")
+    try:
+        analyzer = GapAnalysisEngine()
+        print("✅ Gap Analysis Engine loaded successfully!")
+        return analyzer
+    except Exception as e:
+        print(f"❌ Failed to load Gap Analysis Engine: {str(e)}")
+        return None
+
+@st.cache_resource(show_spinner="Loading Hypothesis Generator...")
+def load_hypothesis_generator():
+    """Load and cache the Hypothesis Generator"""
+    print("🔄 Initializing Hypothesis Generator...")
+    try:
+        generator = HypothesisGenerator()
+        print("✅ Hypothesis Generator loaded successfully!")
+        return generator
+    except Exception as e:
+        print(f"❌ Failed to load Hypothesis Generator: {str(e)}")
+        return None
+
+@st.cache_resource(show_spinner="Loading Experiment Generator...")
+def load_experiment_generator():
+    """Load and cache the Experiment Generator"""
+    print("🔄 Initializing Experiment Generator...")
+    try:
+        generator = ExperimentGenerator()
+        print("✅ Experiment Generator loaded successfully!")
+        return generator
+    except Exception as e:
+        print(f"❌ Failed to load Experiment Generator: {str(e)}")
+        return None
+
+
+class DatasetFetcher:
+    """Fetch real, verified datasets from Kaggle and HuggingFace"""
+    
+    def __init__(self):
+        """Initialize Kaggle API and HuggingFace client"""
+        self.kaggle_api = None
+        self.hf_token = os.getenv('HF_TOKEN')
+        
+        # Initialize Kaggle API only if available and credentials exist
+        if not KAGGLE_AVAILABLE:
+            print("⚠️ Kaggle library not available. Dataset verification will be limited.")
+            return
+        
+        try:
+            kaggle_username = os.getenv('KAGGLE_USERNAME')
+            kaggle_key = os.getenv('KAGGLE_KEY')
+            
+            if kaggle_username and kaggle_key:
+                # Create .kaggle directory if it doesn't exist
+                kaggle_dir = os.path.expanduser('~/.kaggle')
+                os.makedirs(kaggle_dir, exist_ok=True)
+                
+                # Create kaggle.json file
+                kaggle_json_path = os.path.join(kaggle_dir, 'kaggle.json')
+                kaggle_config = {
+                    "username": kaggle_username,
+                    "key": kaggle_key
+                }
+                
+                with open(kaggle_json_path, 'w') as f:
+                    json.dump(kaggle_config, f)
+                
+                # Set proper permissions (read/write for owner only)
+                try:
+                    os.chmod(kaggle_json_path, 0o600)
+                except Exception:
+                    pass  # Windows doesn't support chmod
+                
+                # Now initialize Kaggle API
+                self.kaggle_api = KaggleApi()
+                self.kaggle_api.authenticate()
+                print("✅ Kaggle API initialized successfully")
+            else:
+                print("⚠️ Kaggle credentials not found in .env file. Add KAGGLE_USERNAME and KAGGLE_KEY to enable dataset verification.")
+        except Exception as e:
+            print(f"⚠️ Kaggle API initialization failed: {str(e)}")
+            print("   Dataset links will be AI-generated (may need manual verification)")
+            self.kaggle_api = None
+    
+    def search_kaggle_datasets(self, query: str, max_results: int = 3) -> List[Dict]:
+        """Search for real Kaggle datasets matching query"""
+        if not self.kaggle_api:
+            return []
+        
+        try:
+            print(f"🔍 Searching Kaggle for: {query}")
+            # Fetch datasets using Kaggle API
+            datasets = list(self.kaggle_api.dataset_list(search=query))
+            
+            results = []
+            for dataset in datasets[:max_results]:  # Limit to top results
+                results.append({
+                    "name": dataset.title,
+                    "description": dataset.subtitle or "No description available",
+                    "url": f"https://www.kaggle.com/datasets/{dataset.ref}",
+                    "type": "CSV/Tabular",
+                    "size": f"{dataset.totalBytes // (1024*1024)}MB" if dataset.totalBytes else "Unknown",
+                    "downloads": dataset.downloadCount,
+                    "usability": dataset.usabilityRating
+                })
+            
+            print(f"✅ Found {len(results)} Kaggle datasets")
+            return results
+        except Exception as e:
+            print(f"❌ Kaggle search error: {str(e)}")
+            return []
+    
+    def search_huggingface_datasets(self, query: str, max_results: int = 3) -> List[Dict]:
+        """Search for real HuggingFace datasets matching query"""
+        try:
+            print(f"🔍 Searching HuggingFace for: {query}")
+            
+            # Use HuggingFace API to search datasets
+            url = "https://huggingface.co/api/datasets"
+            params = {
+                "search": query,
+                "limit": max_results,
+                "sort": "downloads"
+            }
+            
+            headers = {}
+            if self.hf_token:
+                headers["Authorization"] = f"Bearer {self.hf_token}"
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                datasets = response.json()
+                results = []
+                
+                for dataset in datasets[:max_results]:
+                    dataset_id = dataset.get('id', '')
+                    results.append({
+                        "name": dataset.get('id', 'Unknown'),
+                        "description": dataset.get('description', 'No description available')[:200],
+                        "url": f"https://huggingface.co/datasets/{dataset_id}",
+                        "type": "Text/Images/Audio",
+                        "size": dataset.get('size', 'Unknown'),
+                        "downloads": dataset.get('downloads', 0),
+                        "likes": dataset.get('likes', 0)
+                    })
+                
+                print(f"✅ Found {len(results)} HuggingFace datasets")
+                return results
+            else:
+                print(f"⚠️ HuggingFace API returned status {response.status_code}")
+                return []
+        except Exception as e:
+            print(f"❌ HuggingFace search error: {str(e)}")
+            return []
+    
+    def get_datasets_for_topic(self, topic: str, hypothesis: str = "", dataset_keywords: List[str] = None) -> List[Dict]:
+        """Get verified datasets from Kaggle (with AI fallback if none found)"""
+        # Use provided keywords or construct from topic
+        if dataset_keywords:
+            search_query = " ".join(dataset_keywords[:2])
+        else:
+            search_query = f"{topic} {hypothesis}"[:80]
+        
+        # Search Kaggle (primary source)
+        kaggle_datasets = self.search_kaggle_datasets(search_query, max_results=2)
+        
+        # If Kaggle found datasets, return them
+        if kaggle_datasets:
+            return kaggle_datasets
+        
+        # Fallback: Generate AI-suggested datasets if Kaggle fails
+        print("⚠️ No datasets found from Kaggle API. Using AI-suggested datasets.")
+        ai_datasets = [
+            {
+                "name": f"Suggested: {topic.title()} Dataset",
+                "description": f"Recommended dataset for {topic}. Search on Kaggle or academic repositories.",
+                "url": f"https://www.kaggle.com/search?q={topic.replace(' ', '+')}",
+                "type": "Dataset",
+                "size": "Varies",
+                "downloads": "N/A",
+                "usability": None,
+                "source": "AI Suggested"
+            }
+        ]
+        return ai_datasets
+
+
+
 
 @dataclass
 class SearchResult:
@@ -75,9 +280,9 @@ class SearchTool:
             for item in results:
                 body = self._get_page_content(item["link"], max_chars)
                 result = SearchResult(
-                    title=item["title"],
-                    link=item["link"],
-                    snippet=item["snippet"],
+                    title=item.get("title", "No title"),  # Added .get() with default
+                    link=item.get("link", ""),
+                    snippet=item.get("snippet", ""),  # FIX: Added .get() with default empty string
                     body=body
                 )
                 enriched_results.append(result)
@@ -567,352 +772,601 @@ class SearchTool:
             print(f"Error fetching {url}: {str(e)}")
             return ""
 
+# class GapAnalysisEngine:
+#     """
+#     Research Gap Analysis Engine using Flan-T5-Large model
+#     Identifies knowledge, methodological, dataset, and temporal gaps in research papers
+#     """
+    
+#     def __init__(self):
+#         """Initialize the Flan-T5 model and tokenizer"""
+#         print("Loading Flan-T5-Large model for gap analysis...")
+#         self.model_name = "google/flan-t5-large"
+        
+#         try:
+#             # Load tokenizer and model from Hugging Face
+#             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+#             self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+            
+#             # Set device (GPU if available, else CPU)
+#             self.device = "cuda" if torch.cuda.is_available() else "cpu"
+#             self.model.to(self.device)
+#             print(f"Model loaded successfully on {self.device}")
+            
+#         except Exception as e:
+#             print(f"Error loading model: {str(e)}")
+#             self.model = None
+#             self.tokenizer = None
+    
+#     def _create_few_shot_prompt(self, papers: List[SearchResult], topic: str) -> str:
+#         """
+#         Create a few-shot prompt with examples to guide the model
+        
+#         Args:
+#             papers: List of SearchResult objects containing paper information
+#             topic: The research topic being analyzed
+            
+#         Returns:
+#             Formatted prompt string with few-shot examples
+#         """
+        
+#         # Format the input papers with more detail
+#         papers_text = ""
+#         for i, paper in enumerate(papers[:12], 1):  # Increased from 10 to 12 papers
+#             papers_text += f"\n--- Paper {i} ---\n"
+#             papers_text += f"Title: {paper.title}\n"
+            
+#             # Add authors if available
+#             if paper.authors:
+#                 papers_text += f"Authors: {', '.join(paper.authors[:3])}\n"  # First 3 authors
+            
+#             # Add publication date
+#             if paper.published:
+#                 papers_text += f"Published: {paper.published}\n"
+            
+#             # Add abstract/summary with more characters
+#             if paper.abstract:
+#                 papers_text += f"Abstract: {paper.abstract[:500]}...\n"  # Increased from 300
+#             elif paper.snippet:
+#                 papers_text += f"Summary: {paper.snippet[:500]}...\n"
+            
+#             # Add study type for clinical trials
+#             if paper.study_type:
+#                 papers_text += f"Study Type: {paper.study_type}\n"
+#             if paper.phase:
+#                 papers_text += f"Phase: {paper.phase}\n"
+        
+#         # Enhanced few-shot prompt with detailed, insightful examples
+#         prompt = f"""You are a PhD-level research analyst with expertise in identifying critical research gaps. Analyze the papers deeply and provide SPECIFIC, ACTIONABLE gaps that researchers can build upon.
+
+# EXAMPLE 1:
+# Topic: Federated Learning Privacy
+# Papers:
+# Paper 1: Differential Privacy in Federated Learning (2022)
+# Abstract: We apply differential privacy mechanisms to federated learning, achieving epsilon=0.5 privacy guarantees with 3% accuracy loss on MNIST...
+# Paper 2: Secure Aggregation Protocols (2021)  
+# Abstract: Novel cryptographic protocols for secure parameter aggregation in federated settings, tested on 100 devices...
+# Paper 3: Privacy Budget Allocation (2020)
+# Abstract: Adaptive privacy budget allocation across federated learning rounds, optimizing utility-privacy tradeoff...
+
+# DEEP ANALYSIS:
+# {{
+#   "knowledge_gaps": [
+#     "CRITICAL: No empirical studies on privacy leakage through gradient updates in heterogeneous device environments (IoT + mobile + edge)",
+#     "UNEXPLORED: Privacy guarantees degrade with model size - no theoretical bounds for models >1B parameters in federated settings",
+#     "MISSING: Real-world privacy attack success rates beyond academic datasets - what about medical records, financial data?",
+#     "UNKNOWN: Privacy-utility tradeoffs in non-IID data distributions with extreme class imbalance (e.g., rare disease detection)"
+#   ],
+#   "methodological_gaps": [
+#     "NO FRAMEWORK: Combining differential privacy + secure aggregation + homomorphic encryption in single unified system - existing work addresses only 1-2",
+#     "MISSING EVALUATION: Longitudinal privacy analysis across 100+ training rounds - current studies stop at 10-20 rounds",
+#     "ABSENT: Privacy-preserving techniques for vertical federated learning (different features per client) - all work focuses on horizontal FL",
+#     "LACKING: Adaptive privacy mechanisms that adjust epsilon based on attack risk in real-time during training"
+#   ],
+#   "dataset_gaps": [
+#     "CRITICAL MISSING: Standardized privacy attack benchmark suite with diverse attack vectors (membership inference, model inversion, gradient leakage)",
+#     "NO BENCHMARK: Real federated datasets with known privacy violations - current benchmarks use synthetic privacy labels",
+#     "LACKING: Heterogeneous device capability datasets showing computation/communication/privacy tradeoffs across 1000+ devices",
+#     "ABSENT: Privacy audit trails from production federated learning deployments"
+#   ],
+#   "temporal_gaps": [
+#     "OUTDATED (pre-2023): Privacy analysis doesn't account for LLM-scale models (GPT-4, Llama-2) in federated settings",
+#     "OBSOLETE HARDWARE: Studies assume 2019-era mobile devices - modern edge TPUs and neural engines change privacy-performance dynamics",
+#     "MISSING 2024 CONTEXT: New privacy regulations (EU AI Act, US state laws) not reflected in federated learning design"
+#   ]
+# }}
+
+# EXAMPLE 2:
+# Topic: Explainable AI in Medical Diagnosis
+# Papers:
+# Paper 1: SHAP for Medical Imaging (2021)
+# Abstract: Applying SHAP values to explain CNN predictions in chest X-ray diagnosis, achieving correlation with radiologist attention...
+# Paper 2: LIME in Clinical Decision Support (2020)
+# Abstract: Local interpretable model-agnostic explanations for electronic health record-based predictions...
+# Paper 3: Attention Visualization in Diagnosis (2022)
+# Abstract: Visualizing transformer attention patterns for disease classification from medical images...
+
+# DEEP ANALYSIS:
+# {{
+#   "knowledge_gaps": [
+#     "CRITICAL: Zero studies on whether physicians ACTUALLY change treatment decisions based on AI explanations - all measure 'trust' not clinical outcomes",
+#     "UNEXPLORED: Explanation quality for rare diseases (<1% prevalence) where models have insufficient training data - current work focuses on common conditions",
+#     "MISSING: Conflicting explanation scenarios - what happens when SHAP suggests feature X but physician believes Y? No resolution frameworks exist",
+#     "UNKNOWN: Cognitive load of processing AI explanations during emergency medicine - explanations may slow critical decisions"
+#   ],
+#   "methodological_gaps": [
+#     "NO GOLD STANDARD: Evaluating explanation correctness requires ground truth (which features TRULY matter) - current methods use proxy metrics like 'plausibility'",
+#     "MISSING FRAMEWORK: Comparative explanation methods - should we use SHAP vs LIME vs attention? No decision tree exists for medical contexts",
+#     "ABSENT: Real-time explanation generation for time-critical diagnoses - current methods take 30+ seconds, unacceptable in ER settings",
+#     "LACKING: Multi-modal explanations combining imaging + EHR + genomics - existing work explains single modality only"
+#   ],
+#   "dataset_gaps": [
+#     "CRITICAL MISSING: Datasets with physician-annotated 'ground truth' explanations for 1000+ diagnoses - current datasets lack expert labels",
+#     "NO BENCHMARK: Longitudinal patient data showing how explanations affected treatment outcomes over months/years",
+#     "LACKING: Adversarial explanation datasets - cases where explanations are intentionally misleading yet appear valid",
+#     "ABSENT: Cross-hospital explanation generalization datasets - do explanations transfer between institutions?"
+#   ],
+#   "temporal_gaps": [
+#     "OUTDATED (pre-2023): Explanation methods designed for CNNs, not foundation models (MedPaLM, GPT-4 for medicine) with emergent reasoning",
+#     "OBSOLETE REGULATORY: FDA guidance on AI explainability from 2019 - new 2024 requirements for transparency not addressed",
+#     "MISSING CURRENT CONTEXT: Post-COVID telehealth adoption means remote explanation delivery - no studies on explaining AI over video consultations"
+#   ]
+# }}
+
+# NOW ANALYZE THIS RESEARCH AREA WITH THE SAME DEPTH AND SPECIFICITY:
+# Topic: {topic}
+# Papers:{papers_text}
+
+# REQUIREMENTS FOR YOUR ANALYSIS:
+# 1. Each gap must be SPECIFIC with technical details, numbers, or clear scenarios - NOT generic statements
+# 2. Identify CRITICAL gaps that block real-world deployment or advancement
+# 3. Point out CONTRADICTIONS or CONFLICTS in existing research approaches
+# 4. Consider PRACTICAL implications (cost, time, feasibility, scalability)
+# 5. Include WHY each gap matters - what problem does it cause? What opportunities does it create?
+# 6. Mention specific technologies, datasets, methods, or evaluation metrics that are missing
+# 7. Be ACTIONABLE - researchers should know exactly what to investigate next
+# 8. FIND AT LEAST 2-3 GAPS PER CATEGORY - there are ALWAYS gaps in research!
+
+# IMPORTANT: Even well-researched areas have gaps! Look for:
+# - Unstudied combinations of techniques
+# - Missing benchmarks or standardized evaluations  
+# - Lack of real-world deployment studies
+# - Outdated assumptions from older papers
+# - Unexplored edge cases or failure modes
+# - Missing cross-domain applications
+
+# You MUST respond with ONLY valid JSON in this exact format (no extra text):
+# {{
+#   "knowledge_gaps": ["gap1", "gap2", "gap3"],
+#   "methodological_gaps": ["gap1", "gap2", "gap3"],
+#   "dataset_gaps": ["gap1", "gap2", "gap3"],
+#   "temporal_gaps": ["gap1", "gap2"]
+# }}
+
+# Generate the JSON now:"""
+
+#         return prompt
+    
+#     def analyze_gaps(self, papers: List[SearchResult], topic: str) -> Dict:
+#         """
+#         Analyze research papers to identify gaps
+        
+#         Args:
+#             papers: List of SearchResult objects from searches
+#             topic: The research topic being analyzed
+            
+#         Returns:
+#             Dictionary containing identified gaps in four categories
+#         """
+        
+#         if not self.model or not self.tokenizer:
+#             return {
+#                 "error": "Model not loaded",
+#                 "knowledge_gaps": [],
+#                 "methodological_gaps": [],
+#                 "dataset_gaps": [],
+#                 "temporal_gaps": []
+#             }
+        
+#         print(f"Analyzing {len(papers)} papers for research gaps...")
+        
+#         # Create the few-shot prompt
+#         prompt = self._create_few_shot_prompt(papers, topic)
+        
+#         try:
+#             # Tokenize the input
+#             inputs = self.tokenizer(
+#                 prompt,
+#                 return_tensors="pt",
+#                 max_length=1024,
+#                 truncation=True
+#             ).to(self.device)
+            
+#             # Generate the analysis with better parameters for detailed output
+#             outputs = self.model.generate(
+#                 **inputs,
+#                 max_length=1024,  # Increased from 512 for more detailed gaps
+#                 min_length=200,   # Ensure substantial output
+#                 num_beams=5,      # Increased from 4 for better quality
+#                 temperature=0.8,  # Slightly higher for more creative insights
+#                 do_sample=True,
+#                 top_p=0.92,       # Slightly higher for more diversity
+#                 repetition_penalty=1.2,  # Avoid repetitive gaps
+#                 length_penalty=1.0
+#             )
+            
+#             # Decode the output
+#             analysis_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+#             print("Raw model output:", analysis_text[:200])
+            
+#             # Try to parse as JSON
+#             try:
+#                 gaps = json.loads(analysis_text)
+#             except json.JSONDecodeError:
+#                 # If not valid JSON, try to extract structured information
+#                 gaps = self._parse_unstructured_output(analysis_text)
+            
+#             # Ensure all required fields exist
+#             gaps.setdefault("knowledge_gaps", [])
+#             gaps.setdefault("methodological_gaps", [])
+#             gaps.setdefault("dataset_gaps", [])
+#             gaps.setdefault("temporal_gaps", [])
+            
+#             return gaps
+            
+#         except Exception as e:
+#             print(f"Error during gap analysis: {str(e)}")
+#             return {
+#                 "error": str(e),
+#                 "knowledge_gaps": [],
+#                 "methodological_gaps": [],
+#                 "dataset_gaps": [],
+#                 "temporal_gaps": []
+#             }
+    
+#     def _parse_unstructured_output(self, text: str) -> Dict:
+#         """
+#         Parse unstructured model output into structured format
+        
+#         Args:
+#             text: Raw text output from the model
+            
+#         Returns:
+#             Dictionary with gap categories
+#         """
+#         gaps = {
+#             "knowledge_gaps": [],
+#             "methodological_gaps": [],
+#             "dataset_gaps": [],
+#             "temporal_gaps": []
+#         }
+        
+#         # Simple parsing logic - extract bullet points or numbered lists
+#         lines = text.split('\n')
+#         current_category = None
+        
+#         for line in lines:
+#             line = line.strip()
+#             if 'knowledge' in line.lower():
+#                 current_category = 'knowledge_gaps'
+#             elif 'methodological' in line.lower() or 'method' in line.lower():
+#                 current_category = 'methodological_gaps'
+#             elif 'dataset' in line.lower() or 'data' in line.lower():
+#                 current_category = 'dataset_gaps'
+#             elif 'temporal' in line.lower() or 'time' in line.lower():
+#                 current_category = 'temporal_gaps'
+#             elif current_category and (line.startswith('-') or line.startswith('•') or any(line.startswith(f"{i}.") for i in range(10))):
+#                 # Clean the line
+#                 cleaned = line.lstrip('-•0123456789. ').strip()
+#                 if cleaned and len(cleaned) > 10:
+#                     gaps[current_category].append(cleaned)
+        
+#         return gaps
+    
+#     def format_gaps_for_display(self, gaps: Dict) -> str:
+#         """
+#         Format the gaps analysis for display in Streamlit
+        
+#         Args:
+#             gaps: Dictionary of identified gaps
+            
+#         Returns:
+#             Formatted markdown string
+#         """
+#         output = "## 🔍 Research Gap Analysis\n\n"
+        
+#         if gaps.get("error"):
+#             output += f"⚠️ Error: {gaps['error']}\n\n"
+        
+#         # Knowledge Gaps
+#         output += "### 📚 Knowledge Gaps\n"
+#         output += "*Questions or areas that haven't been studied yet*\n\n"
+#         if gaps.get("knowledge_gaps"):
+#             for i, gap in enumerate(gaps["knowledge_gaps"], 1):
+#                 output += f"{i}. {gap}\n"
+#         else:
+#             output += "*No significant knowledge gaps identified*\n"
+#         output += "\n"
+        
+#         # Methodological Gaps
+#         output += "### 🔬 Methodological Gaps\n"
+#         output += "*Research approaches or methods not tried*\n\n"
+#         if gaps.get("methodological_gaps"):
+#             for i, gap in enumerate(gaps["methodological_gaps"], 1):
+#                 output += f"{i}. {gap}\n"
+#         else:
+#             output += "*No significant methodological gaps identified*\n"
+#         output += "\n"
+        
+#         # Dataset Gaps
+#         output += "### 💾 Dataset Gaps\n"
+#         output += "*Missing or under-explored datasets*\n\n"
+#         if gaps.get("dataset_gaps"):
+#             for i, gap in enumerate(gaps["dataset_gaps"], 1):
+#                 output += f"{i}. {gap}\n"
+#         else:
+#             output += "*No significant dataset gaps identified*\n"
+#         output += "\n"
+        
+#         # Temporal Gaps
+#         output += "### ⏰ Temporal Gaps\n"
+#         output += "*Areas that are outdated or need updating*\n\n"
+#         if gaps.get("temporal_gaps"):
+#             for i, gap in enumerate(gaps["temporal_gaps"], 1):
+#                 output += f"{i}. {gap}\n"
+#         else:
+#             output += "*No significant temporal gaps identified*\n"
+#         output += "\n"
+        
+#         return output
+
+
+
 class GapAnalysisEngine:
     """
-    Research Gap Analysis Engine using Flan-T5-Large model
+    Research Gap Analysis Engine using OpenAI GPT-4
     Identifies knowledge, methodological, dataset, and temporal gaps in research papers
     """
     
-    def __init__(self):
-        """Initialize the Flan-T5 model and tokenizer"""
-        print("Loading Flan-T5-Large model for gap analysis...")
-        self.model_name = "google/flan-t5-large"
-        
-        try:
-            # Load tokenizer and model from Hugging Face
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-            
-            # Set device (GPU if available, else CPU)
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.model.to(self.device)
-            print(f"Model loaded successfully on {self.device}")
-            
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            self.model = None
-            self.tokenizer = None
-    
-    def _create_few_shot_prompt(self, papers: List[SearchResult], topic: str) -> str:
-        """
-        Create a few-shot prompt with examples to guide the model
+    def __init__(self, progress_callback=None):
+        """Initialize the Gap Analysis Engine with OpenAI only
         
         Args:
-            papers: List of SearchResult objects containing paper information
-            topic: The research topic being analyzed
-            
-        Returns:
-            Formatted prompt string with few-shot examples
+            progress_callback: Optional callback function(message, progress) to report loading progress
         """
+        print("Initializing Gap Analysis Engine (OpenAI-powered)...")
+        self.progress_callback = progress_callback
         
-        # Format the input papers with more detail
-        papers_text = ""
-        for i, paper in enumerate(papers[:12], 1):  # Increased from 10 to 12 papers
-            papers_text += f"\n--- Paper {i} ---\n"
-            papers_text += f"Title: {paper.title}\n"
-            
-            # Add authors if available
-            if paper.authors:
-                papers_text += f"Authors: {', '.join(paper.authors[:3])}\n"  # First 3 authors
-            
-            # Add publication date
-            if paper.published:
-                papers_text += f"Published: {paper.published}\n"
-            
-            # Add abstract/summary with more characters
-            if paper.abstract:
-                papers_text += f"Abstract: {paper.abstract[:500]}...\n"  # Increased from 300
-            elif paper.snippet:
-                papers_text += f"Summary: {paper.snippet[:500]}...\n"
-            
-            # Add study type for clinical trials
-            if paper.study_type:
-                papers_text += f"Study Type: {paper.study_type}\n"
-            if paper.phase:
-                papers_text += f"Phase: {paper.phase}\n"
+        # OpenAI client for gap analysis
+        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         
-        # Enhanced few-shot prompt with detailed, insightful examples
-        prompt = f"""You are a PhD-level research analyst with expertise in identifying critical research gaps. Analyze the papers deeply and provide SPECIFIC, ACTIONABLE gaps that researchers can build upon.
-
-EXAMPLE 1:
-Topic: Federated Learning Privacy
-Papers:
-Paper 1: Differential Privacy in Federated Learning (2022)
-Abstract: We apply differential privacy mechanisms to federated learning, achieving epsilon=0.5 privacy guarantees with 3% accuracy loss on MNIST...
-Paper 2: Secure Aggregation Protocols (2021)  
-Abstract: Novel cryptographic protocols for secure parameter aggregation in federated settings, tested on 100 devices...
-Paper 3: Privacy Budget Allocation (2020)
-Abstract: Adaptive privacy budget allocation across federated learning rounds, optimizing utility-privacy tradeoff...
-
-DEEP ANALYSIS:
-{{
-  "knowledge_gaps": [
-    "CRITICAL: No empirical studies on privacy leakage through gradient updates in heterogeneous device environments (IoT + mobile + edge)",
-    "UNEXPLORED: Privacy guarantees degrade with model size - no theoretical bounds for models >1B parameters in federated settings",
-    "MISSING: Real-world privacy attack success rates beyond academic datasets - what about medical records, financial data?",
-    "UNKNOWN: Privacy-utility tradeoffs in non-IID data distributions with extreme class imbalance (e.g., rare disease detection)"
-  ],
-  "methodological_gaps": [
-    "NO FRAMEWORK: Combining differential privacy + secure aggregation + homomorphic encryption in single unified system - existing work addresses only 1-2",
-    "MISSING EVALUATION: Longitudinal privacy analysis across 100+ training rounds - current studies stop at 10-20 rounds",
-    "ABSENT: Privacy-preserving techniques for vertical federated learning (different features per client) - all work focuses on horizontal FL",
-    "LACKING: Adaptive privacy mechanisms that adjust epsilon based on attack risk in real-time during training"
-  ],
-  "dataset_gaps": [
-    "CRITICAL MISSING: Standardized privacy attack benchmark suite with diverse attack vectors (membership inference, model inversion, gradient leakage)",
-    "NO BENCHMARK: Real federated datasets with known privacy violations - current benchmarks use synthetic privacy labels",
-    "LACKING: Heterogeneous device capability datasets showing computation/communication/privacy tradeoffs across 1000+ devices",
-    "ABSENT: Privacy audit trails from production federated learning deployments"
-  ],
-  "temporal_gaps": [
-    "OUTDATED (pre-2023): Privacy analysis doesn't account for LLM-scale models (GPT-4, Llama-2) in federated settings",
-    "OBSOLETE HARDWARE: Studies assume 2019-era mobile devices - modern edge TPUs and neural engines change privacy-performance dynamics",
-    "MISSING 2024 CONTEXT: New privacy regulations (EU AI Act, US state laws) not reflected in federated learning design"
-  ]
-}}
-
-EXAMPLE 2:
-Topic: Explainable AI in Medical Diagnosis
-Papers:
-Paper 1: SHAP for Medical Imaging (2021)
-Abstract: Applying SHAP values to explain CNN predictions in chest X-ray diagnosis, achieving correlation with radiologist attention...
-Paper 2: LIME in Clinical Decision Support (2020)
-Abstract: Local interpretable model-agnostic explanations for electronic health record-based predictions...
-Paper 3: Attention Visualization in Diagnosis (2022)
-Abstract: Visualizing transformer attention patterns for disease classification from medical images...
-
-DEEP ANALYSIS:
-{{
-  "knowledge_gaps": [
-    "CRITICAL: Zero studies on whether physicians ACTUALLY change treatment decisions based on AI explanations - all measure 'trust' not clinical outcomes",
-    "UNEXPLORED: Explanation quality for rare diseases (<1% prevalence) where models have insufficient training data - current work focuses on common conditions",
-    "MISSING: Conflicting explanation scenarios - what happens when SHAP suggests feature X but physician believes Y? No resolution frameworks exist",
-    "UNKNOWN: Cognitive load of processing AI explanations during emergency medicine - explanations may slow critical decisions"
-  ],
-  "methodological_gaps": [
-    "NO GOLD STANDARD: Evaluating explanation correctness requires ground truth (which features TRULY matter) - current methods use proxy metrics like 'plausibility'",
-    "MISSING FRAMEWORK: Comparative explanation methods - should we use SHAP vs LIME vs attention? No decision tree exists for medical contexts",
-    "ABSENT: Real-time explanation generation for time-critical diagnoses - current methods take 30+ seconds, unacceptable in ER settings",
-    "LACKING: Multi-modal explanations combining imaging + EHR + genomics - existing work explains single modality only"
-  ],
-  "dataset_gaps": [
-    "CRITICAL MISSING: Datasets with physician-annotated 'ground truth' explanations for 1000+ diagnoses - current datasets lack expert labels",
-    "NO BENCHMARK: Longitudinal patient data showing how explanations affected treatment outcomes over months/years",
-    "LACKING: Adversarial explanation datasets - cases where explanations are intentionally misleading yet appear valid",
-    "ABSENT: Cross-hospital explanation generalization datasets - do explanations transfer between institutions?"
-  ],
-  "temporal_gaps": [
-    "OUTDATED (pre-2023): Explanation methods designed for CNNs, not foundation models (MedPaLM, GPT-4 for medicine) with emergent reasoning",
-    "OBSOLETE REGULATORY: FDA guidance on AI explainability from 2019 - new 2024 requirements for transparency not addressed",
-    "MISSING CURRENT CONTEXT: Post-COVID telehealth adoption means remote explanation delivery - no studies on explaining AI over video consultations"
-  ]
-}}
-
-NOW ANALYZE THIS RESEARCH AREA WITH THE SAME DEPTH AND SPECIFICITY:
-Topic: {topic}
-Papers:{papers_text}
-
-REQUIREMENTS FOR YOUR ANALYSIS:
-1. Each gap must be SPECIFIC with technical details, numbers, or clear scenarios - NOT generic statements
-2. Identify CRITICAL gaps that block real-world deployment or advancement
-3. Point out CONTRADICTIONS or CONFLICTS in existing research approaches
-4. Consider PRACTICAL implications (cost, time, feasibility, scalability)
-5. Include WHY each gap matters - what problem does it cause? What opportunities does it create?
-6. Mention specific technologies, datasets, methods, or evaluation metrics that are missing
-7. Be ACTIONABLE - researchers should know exactly what to investigate next
-8. FIND AT LEAST 2-3 GAPS PER CATEGORY - there are ALWAYS gaps in research!
-
-IMPORTANT: Even well-researched areas have gaps! Look for:
-- Unstudied combinations of techniques
-- Missing benchmarks or standardized evaluations  
-- Lack of real-world deployment studies
-- Outdated assumptions from older papers
-- Unexplored edge cases or failure modes
-- Missing cross-domain applications
-
-You MUST respond with ONLY valid JSON in this exact format (no extra text):
-{{
-  "knowledge_gaps": ["gap1", "gap2", "gap3"],
-  "methodological_gaps": ["gap1", "gap2", "gap3"],
-  "dataset_gaps": ["gap1", "gap2", "gap3"],
-  "temporal_gaps": ["gap1", "gap2"]
-}}
-
-Generate the JSON now:"""
-
-        return prompt
+        # Comment out Flan-T5 model loading
+        # self.model_name = "google/flan-t5-large"
+        # self.tokenizer = None
+        # self.model = None
+        # self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # self._models_loaded = False
+        
+        print("✅ Gap Analysis Engine ready (OpenAI GPT-4 mode)")
+    
+    # Comment out the model loading method since we're not using Flan-T5
+    # def _ensure_models_loaded(self):
+    #     """Load models only when first needed"""
+    #     pass
     
     def analyze_gaps(self, papers: List[SearchResult], topic: str) -> Dict:
         """
-        Analyze research papers to identify gaps
+        Analyze research papers to identify gaps using OpenAI GPT-4 only
         
         Args:
-            papers: List of SearchResult objects from searches
-            topic: The research topic being analyzed
+            papers: List of research papers to analyze
+            topic: Research topic
             
         Returns:
-            Dictionary containing identified gaps in four categories
+            Dictionary containing identified gaps by category
         """
-        
-        if not self.model or not self.tokenizer:
-            return {
-                "error": "Model not loaded",
-                "knowledge_gaps": [],
-                "methodological_gaps": [],
-                "dataset_gaps": [],
-                "temporal_gaps": []
-            }
-        
-        print(f"Analyzing {len(papers)} papers for research gaps...")
-        
-        # Create the few-shot prompt
-        prompt = self._create_few_shot_prompt(papers, topic)
-        
         try:
-            # Tokenize the input
-            inputs = self.tokenizer(
-                prompt,
-                return_tensors="pt",
-                max_length=1024,
-                truncation=True
-            ).to(self.device)
+            print(f"  → Analyzing {len(papers)} papers for research gaps...")
             
-            # Generate the analysis with better parameters for detailed output
-            outputs = self.model.generate(
-                **inputs,
-                max_length=1024,  # Increased from 512 for more detailed gaps
-                min_length=200,   # Ensure substantial output
-                num_beams=5,      # Increased from 4 for better quality
-                temperature=0.8,  # Slightly higher for more creative insights
-                do_sample=True,
-                top_p=0.92,       # Slightly higher for more diversity
-                repetition_penalty=1.2,  # Avoid repetitive gaps
-                length_penalty=1.0
-            )
+            # Skip Flan-T5 analysis entirely
+            # print("  → Running Flan-T5-Large analysis...")
+            # flan_gaps = self._analyze_with_flan_t5(papers, topic)
             
-            # Decode the output
-            analysis_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Use only OpenAI analysis
+            print("  → Running GPT-4 gap analysis...")
+            gpt_gaps = self._analyze_with_openai(papers, topic)
             
-            print("Raw model output:", analysis_text[:200])
+            print(f"  ✓ GPT-4 found {len(gpt_gaps.get('knowledge_gaps', []))} knowledge gaps")
+            print(f"  ✓ Total unique gaps identified")
             
-            # Try to parse as JSON
-            try:
-                gaps = json.loads(analysis_text)
-            except json.JSONDecodeError:
-                # If not valid JSON, try to extract structured information
-                gaps = self._parse_unstructured_output(analysis_text)
-            
-            # Ensure all required fields exist
-            gaps.setdefault("knowledge_gaps", [])
-            gaps.setdefault("methodological_gaps", [])
-            gaps.setdefault("dataset_gaps", [])
-            gaps.setdefault("temporal_gaps", [])
-            
-            return gaps
+            return gpt_gaps
             
         except Exception as e:
-            print(f"Error during gap analysis: {str(e)}")
+            print(f"  ❌ Error in gap analysis: {str(e)}")
             return {
-                "error": str(e),
                 "knowledge_gaps": [],
                 "methodological_gaps": [],
                 "dataset_gaps": [],
                 "temporal_gaps": []
             }
     
-    def _parse_unstructured_output(self, text: str) -> Dict:
-        """
-        Parse unstructured model output into structured format
-        
-        Args:
-            text: Raw text output from the model
-            
-        Returns:
-            Dictionary with gap categories
-        """
-        gaps = {
-            "knowledge_gaps": [],
-            "methodological_gaps": [],
-            "dataset_gaps": [],
-            "temporal_gaps": []
-        }
-        
-        # Simple parsing logic - extract bullet points or numbered lists
-        lines = text.split('\n')
-        current_category = None
-        
-        for line in lines:
-            line = line.strip()
-            if 'knowledge' in line.lower():
-                current_category = 'knowledge_gaps'
-            elif 'methodological' in line.lower() or 'method' in line.lower():
-                current_category = 'methodological_gaps'
-            elif 'dataset' in line.lower() or 'data' in line.lower():
-                current_category = 'dataset_gaps'
-            elif 'temporal' in line.lower() or 'time' in line.lower():
-                current_category = 'temporal_gaps'
-            elif current_category and (line.startswith('-') or line.startswith('•') or any(line.startswith(f"{i}.") for i in range(10))):
-                # Clean the line
-                cleaned = line.lstrip('-•0123456789. ').strip()
-                if cleaned and len(cleaned) > 10:
-                    gaps[current_category].append(cleaned)
-        
-        return gaps
+    # Comment out the Flan-T5 analysis method
+    # def _analyze_with_flan_t5(self, papers: List[SearchResult], topic: str) -> Dict:
+    #     """Analyze gaps using Flan-T5 model"""
+    #     # ... commented out ...
+    #     pass
     
-    def format_gaps_for_display(self, gaps: Dict) -> str:
+    def _analyze_with_openai(self, papers: List[SearchResult], topic: str) -> Dict:
         """
-        Format the gaps analysis for display in Streamlit
+        Analyze gaps using OpenAI GPT-4
         
         Args:
-            gaps: Dictionary of identified gaps
+            papers: List of research papers
+            topic: Research topic
             
         Returns:
-            Formatted markdown string
+            Dictionary with categorized gaps
         """
-        output = "## 🔍 Research Gap Analysis\n\n"
+        try:
+            # Prepare paper summaries
+            papers_text = self._prepare_papers_context(papers, max_papers=12)
+            
+            # Create comprehensive prompt
+            prompt = f"""You are an expert research analyst. Analyze the following research papers on "{topic}" and identify research gaps.
+
+PAPERS TO ANALYZE:
+{papers_text}
+
+Identify gaps in these categories:
+1. **Knowledge Gaps**: Unexplored research questions or phenomena
+2. **Methodological Gaps**: Missing or inadequate research approaches
+3. **Dataset Gaps**: Lack of suitable datasets or data limitations
+4. **Temporal Gaps**: Outdated assumptions or need for updated research
+
+For each gap, provide:
+- Clear description
+- Why it's important
+- Potential impact if addressed
+
+Return your analysis in this JSON format:
+{{
+  "knowledge_gaps": [
+    {{"description": "...", "importance": "...", "impact": "..."}}
+  ],
+  "methodological_gaps": [
+    {{"description": "...", "importance": "...", "impact": "..."}}
+  ],
+  "dataset_gaps": [
+    {{"description": "...", "importance": "...", "impact": "..."}}
+  ],
+  "temporal_gaps": [
+    {{"description": "...", "importance": "...", "impact": "..."}}
+  ]
+}}
+
+Provide 2-4 gaps per category. Be specific and actionable."""
+
+            # Call OpenAI API
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert research analyst specializing in identifying research gaps. Return only valid JSON."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            # Parse response
+            response_text = response.choices[0].message.content.strip()
+            
+            # Clean markdown if present
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "").replace("```", "").strip()
+            
+            gaps = json.loads(response_text)
+            return gaps
+            
+        except json.JSONDecodeError as e:
+            print(f"  ⚠️  JSON parsing error: {str(e)}")
+            return self._fallback_gap_structure()
+        except Exception as e:
+            print(f"  ⚠️  OpenAI API error: {str(e)}")
+            return self._fallback_gap_structure()
+    
+    def _prepare_papers_context(self, papers: List[SearchResult], max_papers: int = 12) -> str:
+        """Prepare papers context for the prompt"""
+        papers_text = ""
+        for i, paper in enumerate(papers[:max_papers], 1):
+            papers_text += f"\n{'='*60}\n"
+            papers_text += f"PAPER {i}:\n"
+            papers_text += f"Title: {paper.title}\n"
+            
+            if paper.authors:
+                papers_text += f"Authors: {', '.join(paper.authors[:3])}\n"
+            if paper.published:
+                papers_text += f"Published: {paper.published}\n"
+            
+            # Use abstract or snippet
+            content = paper.abstract if paper.abstract else paper.snippet
+            if content:
+                papers_text += f"Abstract: {content[:500]}...\n"
         
-        if gaps.get("error"):
-            output += f"⚠️ Error: {gaps['error']}\n\n"
+        return papers_text
+    
+    def _fallback_gap_structure(self) -> Dict:
+        """Return fallback gap structure when analysis fails"""
+        return {
+            "knowledge_gaps": [
+                {
+                    "description": "Limited understanding of underlying mechanisms",
+                    "importance": "Critical for theoretical advancement",
+                    "impact": "Could lead to breakthrough insights"
+                }
+            ],
+            "methodological_gaps": [
+                {
+                    "description": "Need for novel experimental approaches",
+                    "importance": "Current methods have limitations",
+                    "impact": "Enable more robust research"
+                }
+            ],
+            "dataset_gaps": [
+                {
+                    "description": "Insufficient diverse datasets",
+                    "importance": "Limits generalizability",
+                    "impact": "Improve model performance"
+                }
+            ],
+            "temporal_gaps": [
+                {
+                    "description": "Research needs updating with recent developments",
+                    "importance": "Field has evolved significantly",
+                    "impact": "More relevant findings"
+                }
+            ]
+        }
+    
+    # Keep the formatting method
+    def _format_gaps_output(self, gaps: Dict, papers_analyzed: int) -> str:
+        """Format gaps into readable markdown output"""
+        output = f"## 🔍 Research Gap Analysis\n\n"
+        output += f"**Papers Analyzed:** {papers_analyzed}\n\n"
         
-        # Knowledge Gaps
-        output += "### 📚 Knowledge Gaps\n"
-        output += "*Questions or areas that haven't been studied yet*\n\n"
-        if gaps.get("knowledge_gaps"):
-            for i, gap in enumerate(gaps["knowledge_gaps"], 1):
-                output += f"{i}. {gap}\n"
-        else:
-            output += "*No significant knowledge gaps identified*\n"
-        output += "\n"
+        if gaps.get('knowledge_gaps'):
+            output += "### 📚 Knowledge Gaps\n"
+            for i, gap in enumerate(gaps['knowledge_gaps'], 1):
+                output += f"{i}. **{gap.get('description', 'N/A')}**\n"
+                output += f"   - *Importance:* {gap.get('importance', 'N/A')}\n"
+                output += f"   - *Potential Impact:* {gap.get('impact', 'N/A')}\n\n"
         
-        # Methodological Gaps
-        output += "### 🔬 Methodological Gaps\n"
-        output += "*Research approaches or methods not tried*\n\n"
-        if gaps.get("methodological_gaps"):
-            for i, gap in enumerate(gaps["methodological_gaps"], 1):
-                output += f"{i}. {gap}\n"
-        else:
-            output += "*No significant methodological gaps identified*\n"
-        output += "\n"
+        if gaps.get('methodological_gaps'):
+            output += "### 🔬 Methodological Gaps\n"
+            for i, gap in enumerate(gaps['methodological_gaps'], 1):
+                output += f"{i}. **{gap.get('description', 'N/A')}**\n"
+                output += f"   - *Importance:* {gap.get('importance', 'N/A')}\n"
+                output += f"   - *Potential Impact:* {gap.get('impact', 'N/A')}\n\n"
         
-        # Dataset Gaps
-        output += "### 💾 Dataset Gaps\n"
-        output += "*Missing or under-explored datasets*\n\n"
-        if gaps.get("dataset_gaps"):
-            for i, gap in enumerate(gaps["dataset_gaps"], 1):
-                output += f"{i}. {gap}\n"
-        else:
-            output += "*No significant dataset gaps identified*\n"
-        output += "\n"
+        if gaps.get('dataset_gaps'):
+            output += "### 💾 Dataset Gaps\n"
+            for i, gap in enumerate(gaps['dataset_gaps'], 1):
+                output += f"{i}. **{gap.get('description', 'N/A')}**\n"
+                output += f"   - *Importance:* {gap.get('importance', 'N/A')}\n"
+                output += f"   - *Potential Impact:* {gap.get('impact', 'N/A')}\n\n"
         
-        # Temporal Gaps
-        output += "### ⏰ Temporal Gaps\n"
-        output += "*Areas that are outdated or need updating*\n\n"
-        if gaps.get("temporal_gaps"):
-            for i, gap in enumerate(gaps["temporal_gaps"], 1):
-                output += f"{i}. {gap}\n"
-        else:
-            output += "*No significant temporal gaps identified*\n"
-        output += "\n"
+        if gaps.get('temporal_gaps'):
+            output += "### ⏰ Temporal Gaps\n"
+            for i, gap in enumerate(gaps['temporal_gaps'], 1):
+                output += f"{i}. **{gap.get('description', 'N/A')}**\n"
+                output += f"   - *Importance:* {gap.get('importance', 'N/A')}\n"
+                output += f"   - *Potential Impact:* {gap.get('impact', 'N/A')}\n\n"
         
         return output
 
@@ -1182,7 +1636,7 @@ Respond with ONLY the JSON containing EXACTLY 5 hypotheses, no additional text."
             # Generate hypotheses using GPT-4
             print("Calling GPT-4 to generate hypotheses...")
             response = self.client.chat.completions.create(
-                model="gpt-4",  # Use GPT-4 for higher quality
+                model="gpt-3.5-turbo",  # Use GPT-4 for higher quality
                 messages=[
                     {"role": "system", "content": "You are a world-class research strategist and grant proposal expert. Generate detailed, actionable research hypotheses. Always respond with valid JSON only."},
                     {"role": "user", "content": prompt}
@@ -1307,6 +1761,261 @@ Respond with ONLY the JSON containing EXACTLY 5 hypotheses, no additional text."
             output += "---\n\n"
         
         return output
+    
+
+
+class ExperimentGenerator:
+    """Generate experiments, datasets, and metrics for research hypotheses"""
+    
+    def __init__(self):
+        """Initialize the experiment generator"""
+        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.dataset_fetcher = DatasetFetcher()
+        print("✅ Experiment Generator initialized")
+    
+    def generate_experiments_for_hypothesis(self, hypothesis: dict, topic: str = "") -> dict:
+        """
+        Generate structured experiment plan for a given hypothesis
+        
+        Args:
+            hypothesis (dict): Selected hypothesis object
+            topic (str): Original research topic for context
+            
+        Returns:
+            dict: Structured experiment plan with datasets, metrics, etc.
+        """
+        try:
+            print(f"🧪 Generating experiments for hypothesis: {hypothesis.get('title', 'Unknown')}")
+            
+            # Extract hypothesis text
+            hypothesis_text = self._extract_hypothesis_text(hypothesis)
+            
+            # Create prompt
+            prompt = self._create_experiment_prompt(hypothesis_text, topic)
+            
+            # Call OpenAI API with higher token limit for detailed experiments
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo-16k",  # Use 16k model for longer responses
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are an expert AI research experiment designer. Generate COMPLETE, PUBLICATION-READY experiments with ALL required details. Return ONLY valid JSON without any markdown formatting or code blocks."
+                    },
+                    {
+                        "role": "user", 
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=4000  # Max for gpt-3.5-turbo-16k output
+            )
+            
+            # Parse response
+            response_text = response.choices[0].message.content.strip()
+            
+            print(f"📝 Raw API response length: {len(response_text)} characters")
+            
+            # Clean response (remove markdown if present)
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "").replace("```", "").strip()
+            elif response_text.startswith("```"):
+                response_text = response_text.replace("```", "").strip()
+            
+            # Try to parse JSON
+            try:
+                experiments_data = json.loads(response_text)
+                print(f"✅ Successfully parsed JSON with {len(experiments_data.get('experiments', []))} experiments")
+            except json.JSONDecodeError as json_err:
+                print(f"❌ JSON parsing failed: {str(json_err)}")
+                print(f"📄 First 500 chars of response: {response_text[:500]}")
+                print(f"📄 Last 200 chars of response: {response_text[-200:]}")
+                raise  # Re-raise to trigger fallback
+            
+            # Fetch REAL datasets from Kaggle API (with AI fallback)
+            print("🔍 Fetching datasets from Kaggle...")
+            try:
+                # Use dataset keywords if provided, otherwise use topic
+                dataset_keywords = experiments_data.get('dataset_keywords', [])
+                
+                print(f"🔎 Keywords: {dataset_keywords}")
+                
+                real_datasets = self.dataset_fetcher.get_datasets_for_topic(
+                    topic=topic,
+                    hypothesis=hypothesis.get('title', ''),
+                    dataset_keywords=dataset_keywords
+                )
+                
+                print(f"📊 Found {len(real_datasets)} datasets")
+                
+                # Store datasets as simple list
+                experiments_data['datasets'] = real_datasets
+                print(f"✅ Added {len(real_datasets)} dataset(s)")
+                
+            except Exception as dataset_err:
+                print(f"⚠️ Dataset fetching failed: {str(dataset_err)}")
+                experiments_data['datasets'] = []
+            
+            # Add metadata
+            experiments_data["metadata"] = {
+                "hypothesis_id": hypothesis.get("hypothesis_id", "unknown"),
+                "hypothesis_title": hypothesis.get("title", "Unknown Hypothesis"),
+                "generated_at": datetime.now().isoformat(),
+                "model_used": "gpt-3.5-turbo-16k",
+                "datasets_verified": bool(real_datasets and len(real_datasets) > 0) if 'real_datasets' in locals() else False
+            }
+            
+            print(f"✅ Generated {len(experiments_data.get('experiments', []))} experiments")
+            return experiments_data
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing error: {str(e)}")
+            print("   Returning fallback experiment structure")
+            return self._get_fallback_experiment_structure()
+        except Exception as e:
+            print(f"❌ Error generating experiments: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            print("   Returning fallback experiment structure")
+            return self._get_fallback_experiment_structure()
+    
+    def _extract_hypothesis_text(self, hypothesis: dict) -> str:
+        """Extract ALL relevant details from hypothesis object for complete context"""
+        parts = []
+        
+        # Core hypothesis information
+        if hypothesis.get("title"):
+            parts.append(f"Hypothesis Title: {hypothesis['title']}")
+        
+        if hypothesis.get("problem_statement"):
+            parts.append(f"Problem Statement: {hypothesis['problem_statement']}")
+        
+        if hypothesis.get("proposed_solution"):
+            parts.append(f"Proposed Solution: {hypothesis['proposed_solution']}")
+        
+        if hypothesis.get("gap_addressed"):
+            parts.append(f"Research Gap Being Addressed: {hypothesis['gap_addressed']}")
+        
+        if hypothesis.get("expected_impact"):
+            parts.append(f"Expected Impact: {hypothesis['expected_impact']}")
+        
+        if hypothesis.get("methodology"):
+            parts.append(f"Suggested Methodology: {hypothesis['methodology']}")
+        
+        # Scores for context on feasibility
+        scores = []
+        if hypothesis.get("novelty_score"):
+            scores.append(f"Novelty: {hypothesis['novelty_score']}/10")
+        if hypothesis.get("impact_score"):
+            scores.append(f"Impact: {hypothesis['impact_score']}/10")
+        if hypothesis.get("feasibility_score"):
+            scores.append(f"Feasibility: {hypothesis['feasibility_score']}/10")
+        
+        if scores:
+            parts.append(f"Scores: {', '.join(scores)}")
+            
+        return "\n\n".join(parts)
+    
+    def _create_experiment_prompt(self, hypothesis_text: str, topic: str) -> str:
+        """Create the experiment generation prompt"""
+        return f"""
+Generate 2-3 COMPLETE experiments to test this hypothesis. Make them SPECIFIC to the hypothesis, not generic.
+
+TOPIC: {topic}
+
+HYPOTHESIS:
+{hypothesis_text}
+
+For each experiment, provide:
+1. **id**: Number (1, 2, 3)
+2. **title**: Specific title reflecting the hypothesis
+3. **introduction**: 3-4 sentences explaining how this tests the hypothesis
+4. **description**: 4-5 sentences detailing the approach
+5. **steps**: Array of 8-12 detailed methodology steps specific to this hypothesis
+6. **difficulty**: "Easy", "Medium", or "Hard"
+7. **estimated_time**: Realistic timeline (e.g., "2-3 months")
+8. **required_resources**: Array of specific computing/storage/tool requirements
+
+Also provide SHARED resources:
+- **dataset_keywords**: Array of 3-5 keywords for finding relevant datasets
+- **metrics**: Array of 4-5 evaluation metrics with name, description, range
+- **architectures**: Array of 3-4 model architectures with name, description, parameters
+- **baselines**: Array of 3 baseline models with name, expected_performance, description
+- **challenges**: Array of 4-5 specific challenges with mitigation strategies
+- **expected_outcomes**: Object with accuracy_range, training_time, model_size, inference_speed
+
+IMPORTANT:
+- Design experiments SPECIFICALLY for THIS hypothesis (not generic ML experiments)
+- Steps must be detailed and hypothesis-specific
+- Use domain-appropriate datasets, metrics, and models that match the hypothesis topic
+- Tailor everything (data sources, evaluation methods, architectures) to the specific research domain
+
+Return ONLY valid JSON (no markdown, no code blocks).
+
+JSON format:
+{{
+  "experiments": [
+    {{
+      "id": 1,
+      "title": "Specific experiment title",
+      "introduction": "How this tests the hypothesis...",
+      "description": "Detailed approach...",
+      "steps": ["Step 1: ...", "Step 2: ...", ... 8-12 steps],
+      "difficulty": "Medium",
+      "estimated_time": "2-3 months",
+      "required_resources": ["GPU requirements", "Storage", "Software"]
+    }}
+  ],
+  "dataset_keywords": ["keyword1", "keyword2", "keyword3"],
+  "metrics": [{{"name": "Accuracy", "description": "...", "range": "0-100%"}}],
+  "architectures": [{{"name": "Model Name", "description": "...", "parameters": "100M"}}],
+  "baselines": [{{"name": "Baseline", "expected_performance": "70%", "description": "..."}}],
+  "challenges": ["Challenge 1 with mitigation", "Challenge 2..."],
+  "expected_outcomes": {{"accuracy_range": "85-92%", "training_time": "6-8h", "model_size": "150MB", "inference_speed": "20ms"}}
+}}
+"""
+
+    def _get_fallback_experiment_structure(self) -> dict:
+        """Return fallback structure when API fails"""
+        return {
+            "experiments": [
+                {
+                    "id": 1,
+                    "title": "Basic Implementation",
+                    "description": "Implement a basic version of the proposed solution",
+                    "steps": [
+                        "Collect and preprocess data",
+                        "Implement baseline model",
+                        "Train and validate",
+                        "Analyze results"
+                    ],
+                    "difficulty": "intermediate",
+                    "estimated_time": "2-4 weeks",
+                    "required_resources": ["Computing resources", "Dataset access"]
+                }
+            ],
+            "datasets": {
+                "kaggle": [],
+                "huggingface": []
+            },
+            "metrics": [
+                {"name": "Accuracy", "description": "Classification accuracy", "range": "0-1"}
+            ],
+            "architectures": [],
+            "baselines": [],
+            "challenges": ["Limited information available"],
+            "expected_outcomes": {
+                "accuracy_range": "To be determined",
+                "training_time": "Variable", 
+                "model_size": "Unknown",
+                "inference_speed": "Unknown"
+            },
+            "alternatives": [],
+            "metadata": {
+                "generated_at": datetime.now().isoformat(),
+                "model_used": "fallback",
+                "status": "limited_data"
+            }
+        }    
 
 class Agent:
     """AI agent wrapper for OpenAI ChatGPT model"""
@@ -1399,19 +2108,40 @@ class MultiAgentSystem:
             
         self.search_tool = SearchTool()
         
-        # Initialize Gap Analysis Engine
-        try:
-            self.gap_analyzer = GapAnalysisEngine()
-        except Exception as e:
-            print(f"Failed to initialize Gap Analysis Engine: {str(e)}")
-            self.gap_analyzer = None
+        # ============================================================================
+        # MODIFIED: Don't initialize heavy models here - use lazy loading instead
+        # ============================================================================
+        self._gap_analyzer = None
+        self._hypothesis_generator = None
+        self._experiment_generator = None
         
-        # Initialize Hypothesis Generator
-        try:
-            self.hypothesis_generator = HypothesisGenerator()
-        except Exception as e:
-            print(f"Failed to initialize Hypothesis Generator: {str(e)}")
-            self.hypothesis_generator = None
+        print("✅ MultiAgentSystem initialized (models will load on demand)")
+    
+    # ============================================================================
+    # LAZY LOADING PROPERTIES - ADD THESE NEW METHODS
+    # ============================================================================
+    
+    @property
+    def gap_analyzer(self):
+        """Lazy load gap analyzer only when needed"""
+        if self._gap_analyzer is None:
+            self._gap_analyzer = load_gap_analyzer()
+        return self._gap_analyzer
+    
+    @property
+    def hypothesis_generator(self):
+        """Lazy load hypothesis generator only when needed"""
+        if self._hypothesis_generator is None:
+            self._hypothesis_generator = load_hypothesis_generator()
+        return self._hypothesis_generator
+    
+    @property
+    def experiment_generator(self):
+        """Lazy load experiment generator only when needed"""
+        if self._experiment_generator is None:
+            self._experiment_generator = load_experiment_generator()
+        return self._experiment_generator
+    
 
     async def run_gap_analysis(self, topic: str) -> Dict:
         """
@@ -1545,7 +2275,7 @@ Respond with ONLY valid JSON (no markdown, no extra text):
 }}"""
             
             response = self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-3.5-turbo",
                 messages=[
                     {
                         "role": "system", 
@@ -1731,96 +2461,166 @@ Respond with ONLY valid JSON (no markdown, no extra text):
         
         return all_papers
     
-    async def _run_gap_analysis_with_papers(self, papers: List[SearchResult], topic: str) -> Dict:
+    async def generate_experiments_for_hypothesis(self, hypothesis: dict, topic: str = "") -> dict:
         """
-        Run gap analysis with pre-collected papers (internal method)
-        Uses BOTH Flan-T5 and GPT-4, then combines unique gaps
+        Generate experiments for a selected hypothesis
         
         Args:
-            papers: Pre-collected papers
+            hypothesis (dict): Selected hypothesis
+            topic (str): Original research topic
+            
+        Returns:
+            dict: Experiment plan with datasets, metrics, etc.
+        """
+        print(f"\n🧪 GENERATING EXPERIMENTS FOR HYPOTHESIS")
+        print("=" * 50)
+        
+        try:
+            experiments = self.experiment_generator.generate_experiments_for_hypothesis(
+                hypothesis, topic
+            )
+            
+            print(f"✅ Experiment generation completed successfully")
+            return experiments
+            
+        except Exception as e:
+            print(f"❌ Error in experiment generation: {str(e)}")
+            return self.experiment_generator._get_fallback_experiment_structure()
+    
+    # async def _run_gap_analysis_with_papers(self, papers: List[SearchResult], topic: str) -> Dict:
+    #     """
+    #     Run gap analysis with pre-collected papers (internal method)
+    #     Uses BOTH Flan-T5 and GPT-4, then combines unique gaps
+        
+    #     Args:
+    #         papers: Pre-collected papers
+    #         topic: Research topic
+            
+    #     Returns:
+    #         Gap analysis results
+    #     """
+    #     print(f"  → Analyzing {len(papers)} papers for research gaps...")
+        
+    #     if not papers or len(papers) == 0:
+    #         return {
+    #             "gaps": {
+    #                 "error": "No papers found",
+    #                 "knowledge_gaps": [],
+    #                 "methodological_gaps": [],
+    #                 "dataset_gaps": [],
+    #                 "temporal_gaps": []
+    #             },
+    #             "formatted_output": "⚠️ No papers to analyze",
+    #             "papers_analyzed": 0,
+    #             "papers": []
+    #         }
+        
+    #     # Run BOTH models in parallel for redundancy
+    #     flan_t5_gaps = {}
+    #     gpt4_gaps = {}
+        
+    #     # Method 1: Flan-T5-Large (local, free)
+    #     if self.gap_analyzer:
+    #         print("  → Running Flan-T5-Large analysis...")
+    #         try:
+    #             flan_t5_gaps = self.gap_analyzer.analyze_gaps(papers, topic)
+    #             total_flan = sum(len(flan_t5_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
+    #             print(f"  ✓ Flan-T5 found {total_flan} gaps")
+    #         except Exception as e:
+    #             print(f"  ⚠️ Flan-T5 error: {str(e)}")
+    #             flan_t5_gaps = {
+    #                 "knowledge_gaps": [],
+    #                 "methodological_gaps": [],
+    #                 "dataset_gaps": [],
+    #                 "temporal_gaps": []
+    #             }
+        
+    #     # Method 2: GPT-4 (always run for reliability)
+    #     print("  → Running GPT-4 analysis...")
+    #     try:
+    #         gpt4_gaps = await self._openai_gap_analysis_fallback(papers, topic)
+    #         total_gpt = sum(len(gpt4_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
+    #         print(f"  ✓ GPT-4 found {total_gpt} gaps")
+    #     except Exception as e:
+    #         print(f"  ⚠️ GPT-4 error: {str(e)}")
+    #         gpt4_gaps = {
+    #             "knowledge_gaps": [],
+    #             "methodological_gaps": [],
+    #             "dataset_gaps": [],
+    #             "temporal_gaps": []
+    #         }
+        
+    #     # Combine and deduplicate gaps from both models
+    #     combined_gaps = self._combine_and_deduplicate_gaps(flan_t5_gaps, gpt4_gaps)
+        
+    #     # Determine which model(s) contributed
+    #     total_flan = sum(len(flan_t5_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
+    #     total_gpt = sum(len(gpt4_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
+        
+    #     if total_flan > 0 and total_gpt > 0:
+    #         combined_gaps["source"] = "Flan-T5-Large + GPT-4 (Combined)"
+    #     elif total_gpt > 0:
+    #         combined_gaps["source"] = "GPT-4"
+    #     elif total_flan > 0:
+    #         combined_gaps["source"] = "Flan-T5-Large"
+    #     else:
+    #         combined_gaps["source"] = "No gaps found"
+        
+    #     total_combined = sum(len(combined_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
+    #     print(f"  ✓ Total unique gaps after combining: {total_combined}")
+        
+    #     formatted_output = self.gap_analyzer.format_gaps_for_display(combined_gaps) if self.gap_analyzer else "No formatter available"
+        
+    #     return {
+    #         "gaps": combined_gaps,
+    #         "formatted_output": formatted_output,
+    #         "papers_analyzed": len(papers),
+    #         "papers": papers
+    #     }
+
+
+
+
+
+
+    
+    async def _run_gap_analysis_with_papers(self, papers: List[SearchResult], topic: str) -> Dict:
+        """
+        Run gap analysis using OpenAI GPT-4 only (Flan-T5 disabled for speed)
+        
+        Args:
+            papers: List of research papers
             topic: Research topic
             
         Returns:
-            Gap analysis results
+            Dictionary containing gap analysis results
         """
-        print(f"  → Analyzing {len(papers)} papers for research gaps...")
+        print(f"\n🔍 PHASE 3/4: Gap Analysis")
         
-        if not papers or len(papers) == 0:
-            return {
-                "gaps": {
-                    "error": "No papers found",
-                    "knowledge_gaps": [],
-                    "methodological_gaps": [],
-                    "dataset_gaps": [],
-                    "temporal_gaps": []
-                },
-                "formatted_output": "⚠️ No papers to analyze",
-                "papers_analyzed": 0,
-                "papers": []
-            }
-        
-        # Run BOTH models in parallel for redundancy
-        flan_t5_gaps = {}
-        gpt4_gaps = {}
-        
-        # Method 1: Flan-T5-Large (local, free)
-        if self.gap_analyzer:
-            print("  → Running Flan-T5-Large analysis...")
-            try:
-                flan_t5_gaps = self.gap_analyzer.analyze_gaps(papers, topic)
-                total_flan = sum(len(flan_t5_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
-                print(f"  ✓ Flan-T5 found {total_flan} gaps")
-            except Exception as e:
-                print(f"  ⚠️ Flan-T5 error: {str(e)}")
-                flan_t5_gaps = {
-                    "knowledge_gaps": [],
-                    "methodological_gaps": [],
-                    "dataset_gaps": [],
-                    "temporal_gaps": []
-                }
-        
-        # Method 2: GPT-4 (always run for reliability)
-        print("  → Running GPT-4 analysis...")
         try:
-            gpt4_gaps = await self._openai_gap_analysis_fallback(papers, topic)
-            total_gpt = sum(len(gpt4_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
-            print(f"  ✓ GPT-4 found {total_gpt} gaps")
-        except Exception as e:
-            print(f"  ⚠️ GPT-4 error: {str(e)}")
-            gpt4_gaps = {
-                "knowledge_gaps": [],
-                "methodological_gaps": [],
-                "dataset_gaps": [],
-                "temporal_gaps": []
+            # Use only OpenAI gap analysis (faster, no model loading)
+            gaps = self.gap_analyzer.analyze_gaps(papers, topic)
+            
+            # Format output
+            formatted_output = self.gap_analyzer._format_gaps_output(gaps, len(papers))
+            
+            return {
+                "gaps": gaps,
+                "formatted_output": formatted_output,
+                "papers_analyzed": len(papers),
+                "method": "OpenAI GPT-4"
             }
-        
-        # Combine and deduplicate gaps from both models
-        combined_gaps = self._combine_and_deduplicate_gaps(flan_t5_gaps, gpt4_gaps)
-        
-        # Determine which model(s) contributed
-        total_flan = sum(len(flan_t5_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
-        total_gpt = sum(len(gpt4_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
-        
-        if total_flan > 0 and total_gpt > 0:
-            combined_gaps["source"] = "Flan-T5-Large + GPT-4 (Combined)"
-        elif total_gpt > 0:
-            combined_gaps["source"] = "GPT-4"
-        elif total_flan > 0:
-            combined_gaps["source"] = "Flan-T5-Large"
-        else:
-            combined_gaps["source"] = "No gaps found"
-        
-        total_combined = sum(len(combined_gaps.get(k, [])) for k in ["knowledge_gaps", "methodological_gaps", "dataset_gaps", "temporal_gaps"])
-        print(f"  ✓ Total unique gaps after combining: {total_combined}")
-        
-        formatted_output = self.gap_analyzer.format_gaps_for_display(combined_gaps) if self.gap_analyzer else "No formatter available"
-        
-        return {
-            "gaps": combined_gaps,
-            "formatted_output": formatted_output,
-            "papers_analyzed": len(papers),
-            "papers": papers
-        }
+            
+        except Exception as e:
+            print(f"❌ Gap analysis error: {str(e)}")
+            return {
+                "gaps": self.gap_analyzer._fallback_gap_structure(),
+                "formatted_output": "Gap analysis encountered an error.",
+                "papers_analyzed": len(papers),
+                "method": "fallback"
+            }
+
+
     
     def _combine_and_deduplicate_gaps(self, gaps1: Dict, gaps2: Dict) -> Dict:
         """
