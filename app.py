@@ -330,14 +330,6 @@ def main():
                         
                         if hyp.get('expected_impact'):
                             st.markdown(f"**🚀 Expected Impact:** {hyp['expected_impact']}")
-                        
-                        # Selection button
-                        if st.button(f"✅ Select This Hypothesis for Experiments", key=f"select_hyp_{idx}"):
-                            st.session_state.selected_hypothesis = hyp
-                            st.session_state.selected_hypothesis_idx = idx
-                            st.session_state.selected_gap = hyp.get('gap_addressed', 'Not specified')
-                            st.success(f"✅ Selected Hypothesis {idx} for experiment design!")
-                            st.info("👉 Go to the 'Experiment Design' tab to see suggested experiments")
             else:
                 st.warning("No hypotheses generated")
         
@@ -451,44 +443,52 @@ def main():
                     col_a, col_b = st.columns(2)
                     with col_a:
                         st.markdown("""
-                        **Section 1: Title & Abstract**
-                        - Generated title based on your hypothesis
-                        - Comprehensive abstract summarizing the paper
+                        **Title & Abstract**
+                        - Title: 10-12 words based on your hypothesis
+                        - Abstract: ~200 words summarizing the paper
                         
-                        **Section 2: Introduction**
+                        **Introduction** (~550 words, 4 paragraphs)
                         - Background on the research topic
                         - Problem statement from hypothesis
                         - Research objectives and contributions
+                        - Paper structure overview
                         
-                        **Section 3: Literature Review**
+                        **Literature Review** (~700 words, 4-5 paragraphs)
                         - Analysis of collected research papers
                         - Current state of the art
                         - Research gaps identified
+                        - Positioning of your work
                         
-                        **Section 4: Methodology**
+                        **Methodology** (~800 words, 5-6 paragraphs)
                         - Complete experimental design
                         - Step-by-step procedures from selected experiment
                         - Datasets, metrics, and evaluation approach
+                        - Implementation details
                         """)
                     with col_b:
                         st.markdown("""
-                        **Section 5: Expected Results**
-                        - Placeholder for your experimental results
+                        **Expected Results** (~550 words, 4 paragraphs)
+                        - Anticipated experimental outcomes
                         - Tables and figures templates
+                        - Performance metrics
                         - Analysis framework
                         
-                        **Section 6: Discussion**
-                        - Interpretation guidelines
+                        **Discussion** (~600 words, 4-5 paragraphs)
+                        - Interpretation of expected results
                         - Comparison with baselines
                         - Implications of findings
+                        - Limitations and strengths
                         
-                        **Section 7: Conclusion**
+                        **Conclusion** (~300 words, 3 paragraphs)
                         - Summary of contributions
+                        - Key findings
                         - Future work directions
                         
-                        **Section 8: References**
+                        **References**
                         - Formatted citations (APA style)
                         - All collected research papers
+                        
+                        **Total: ~3,500 words (4-5 pages)**
                         """)
                 
                 st.markdown("---")
