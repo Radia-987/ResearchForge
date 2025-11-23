@@ -20,13 +20,220 @@ load_dotenv()
 st.set_page_config(
     page_title="Research Assistant",
     page_icon="🔍",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# Custom CSS for improved UI
+st.markdown("""
+<style>
+    /* Main app styling */
+    .main {
+        background-color: #0E1117;
+    }
+    
+    /* Headers */
+    h1 {
+        color: #FFFFFF !important;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        padding-bottom: 10px;
+    }
+    
+    h2 {
+        color: #E0E0E0 !important;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: 600;
+        padding-top: 20px;
+        padding-bottom: 10px;
+    }
+    
+    h3 {
+        color: #B0B0B0 !important;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: 500;
+    }
+    
+    /* Paragraphs and text */
+    p, li {
+        font-size: 15px;
+        line-height: 1.7;
+        color: #D0D0D0;
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 16px;
+        padding: 12px 24px;
+        transition: all 0.3s ease;
+        border: none;
+    }
+    
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(103, 126, 234, 0.4);
+    }
+    
+    /* Input fields */
+    .stTextInput>div>div>input {
+        border-radius: 8px;
+        border: 2px solid #667eea;
+        padding: 12px;
+        font-size: 15px;
+        background-color: #1E1E1E;
+        color: #FFFFFF;
+    }
+    
+    .stTextInput>div>div>input:focus {
+        border-color: #764ba2;
+        box-shadow: 0 0 0 2px rgba(118, 75, 162, 0.2);
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        font-size: 28px;
+        font-weight: 700;
+        color: #667eea;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        font-size: 14px;
+        font-weight: 500;
+        color: #B0B0B0;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #1A1A1A;
+        padding: 10px;
+        border-radius: 10px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 12px 20px;
+        font-weight: 600;
+        font-size: 15px;
+        background-color: #2A2A2A;
+        color: #B0B0B0;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    
+    /* Expanders */
+    .streamlit-expanderHeader {
+        background-color: #1E1E1E;
+        border-radius: 8px;
+        font-weight: 600;
+        color: #E0E0E0;
+        border-left: 4px solid #667eea;
+    }
+    
+    .streamlit-expanderHeader:hover {
+        background-color: #2A2A2A;
+    }
+    
+    /* Dataframes */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div > div > div {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Success/Info/Warning/Error boxes */
+    .stSuccess, .stInfo, .stWarning, .stError {
+        border-radius: 8px;
+        padding: 15px;
+        border-left: 4px solid;
+    }
+    
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #0A0A0A;
+    }
+    
+    /* Download buttons */
+    .stDownloadButton>button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    
+    /* Dividers */
+    hr {
+        border-color: #2A2A2A;
+        margin: 30px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 def init_session_state():
     """Initialize session state variables"""
     if 'search_history' not in st.session_state:
         st.session_state.search_history = []
+    if 'analysis_progress' not in st.session_state:
+        st.session_state.analysis_progress = 0
+
+def get_score_badge(score, label):
+    """Generate color-coded badge for scores"""
+    try:
+        score_val = float(score)
+        if score_val >= 8:
+            color = "#00C853"  # Green
+            emoji = "🟢"
+        elif score_val >= 6:
+            color = "#FFA726"  # Orange
+            emoji = "🟡"
+        else:
+            color = "#EF5350"  # Red
+            emoji = "🔴"
+        
+        return f"""
+        <div style="display: inline-block; background-color: {color}; color: white; padding: 5px 12px; 
+                    border-radius: 15px; margin: 3px; font-weight: bold; font-size: 14px;">
+            {emoji} {label}: {score_val:.1f}/10
+        </div>
+        """
+    except:
+        return f"<span>{label}: {score}</span>"
+
+def parse_literature_review(review_text):
+    """Parse literature review into collapsible sections"""
+    sections = {}
+    current_section = "Introduction"
+    current_content = []
+    
+    lines = review_text.split('\n')
+    for line in lines:
+        # Detect section headers
+        if line.startswith('##'):
+            # Save previous section
+            if current_content:
+                sections[current_section] = '\n'.join(current_content)
+            # Start new section
+            current_section = line.replace('#', '').strip()
+            current_content = []
+        else:
+            current_content.append(line)
+    
+    # Save last section
+    if current_content:
+        sections[current_section] = '\n'.join(current_content)
+    
+    return sections if sections else {"Full Review": review_text}
 
 def convert_markdown_to_docx(markdown_text: str, title: str = "Research Paper") -> bytes:
     """Convert markdown text to Word document (.docx) format"""
@@ -93,8 +300,22 @@ async def run_async_operations(system, search_query, max_results=3):
 
 def main():
     """Main application function"""
-    st.title("📚 AI Research Assistant - Complete Analysis")
-    st.markdown("*Automated Literature Review • Gap Analysis • Hypothesis Generation*")
+    st.markdown("""
+    <div style="text-align: center; padding: 30px 20px; margin-bottom: 20px; 
+                background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+                border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+        <h1 style="font-size: 42px; margin-bottom: 8px; color: #ffffff; font-weight: 700; letter-spacing: 0.5px;">
+            ResearchForge
+        </h1>
+        <p style="font-size: 16px; color: #a0aec0; font-weight: 500; margin-bottom: 15px;">
+            Autonomous AI Research Assistant
+        </p>
+        <p style="font-size: 14px; color: #cbd5e0; font-weight: 400; line-height: 1.8;">
+            Automated Literature Review • Gap Analysis • Hypothesis Generation<br/>
+            Experiment Design • Dataset Recommendations • AI Research Paper Writer
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     
     init_session_state()
 
@@ -107,88 +328,172 @@ def main():
 
     # Sidebar configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #2c5364 0%, #203a43 100%); 
+                    padding: 18px; border-radius: 8px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1);">
+            <h2 style="color: white; margin: 0; text-align: center; font-size: 20px; font-weight: 600;">Configuration</h2>
+        </div>
+        """, unsafe_allow_html=True)
         
         st.markdown("### Analysis Pipeline")
-        st.info("""
-        **What happens when you search:**
-        1. 📄 Collect 10-15 research papers
-        2. 📚 Literature Review (GPT-3.5)
-        3. 🔍 Gap Analysis (Flan-T5 + GPT-4)
-        4. 💡 Hypothesis Generation (GPT-4)
-        """)
+        st.markdown("""
+        <div style="background-color: #1e293b; padding: 15px; border-radius: 8px; border-left: 3px solid #3b82f6;">
+            <p style="color: #e2e8f0; font-size: 14px; margin-bottom: 10px; font-weight: 600;">What happens when you search:</p>
+            <p style="color: #cbd5e0; margin: 6px 0; font-size: 13px;">1. 📄 Collect 10-15 research papers</p>
+            <p style="color: #cbd5e0; margin: 6px 0; font-size: 13px;">2. 📚 Literature Review (GPT-3.5)</p>
+            <p style="color: #cbd5e0; margin: 6px 0; font-size: 13px;">3. 🔍 Gap Analysis (GPT-4)</p>
+            <p style="color: #cbd5e0; margin: 6px 0; font-size: 13px;">4. 💡 Hypothesis Generation (GPT-4)</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("")
 
         # API Status
-        st.header("🔌 API Status")
+        st.markdown("### API Status")
         if os.getenv('OPENAI_API_KEY') and os.getenv('GOOGLE_SEARCH_ENGINE_ID'):
-            st.success("✅ All APIs configured")
+            st.markdown("""
+            <div style="background-color: #064e3b; padding: 12px; border-radius: 8px; border-left: 3px solid #10b981;">
+                <p style="color: #d1fae5; margin: 0; font-weight: 600; font-size: 14px;">✅ All APIs configured</p>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.error("❌ APIs not configured. Please check .env file")
+            st.markdown("""
+            <div style="background-color: #7f1d1d; padding: 12px; border-radius: 8px; border-left: 3px solid #ef4444;">
+                <p style="color: #fecaca; margin: 0; font-weight: 600; font-size: 14px;">❌ APIs not configured. Please check .env file</p>
+            </div>
+            """, unsafe_allow_html=True)
         
+        st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("---")
-        st.markdown("**Powered by:**")
-        st.markdown("• OpenAI GPT-4 & GPT-3.5")
-        st.markdown("• Google Flan-T5-Large")
-        st.markdown("• Sentence-BERT")
+        
+        st.markdown("""
+        <div style="background-color: #1e293b; padding: 15px; border-radius: 8px;">
+            <p style="color: #60a5fa; font-weight: 600; margin-bottom: 10px; font-size: 14px;">Powered by:</p>
+            <p style="color: #e2e8f0; margin: 5px 0; padding-left: 10px; font-size: 13px;">• OpenAI GPT-4 & GPT-3.5</p>
+            <p style="color: #e2e8f0; margin: 5px 0; padding-left: 10px; font-size: 13px;">• Sentence-BERT</p>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Add info about model loading
-        st.markdown("---")
-        st.info("💡 **Note:** Heavy AI models load on first use. Subsequent uses are instant!")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background-color: #134e4a; padding: 12px; border-radius: 8px; border-left: 3px solid #14b8a6;">
+            <p style="color: #5eead4; margin: 0; font-size: 13px;">💡 <b>Note:</b> Heavy AI models load on first use. Subsequent uses are instant!</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
     # Main search interface
-    st.markdown("## 🔍 Enter Your Research Topic")
+    st.markdown("")
+    st.markdown("")
     
     # Show current analysis status
     if st.session_state.get('complete_data'):
         current_topic = st.session_state.get('search_query', 'Unknown')
-        st.success(f"✅ Analysis completed for: **{current_topic}**")
+        st.markdown(f"""
+        <div style="background-color: rgba(16, 185, 129, 0.1); padding: 12px 20px; border-radius: 6px; 
+                    border-left: 3px solid #10b981; margin-bottom: 20px;">
+            <p style="color: #6ee7b7; margin: 0; font-size: 14px; font-weight: 500;">
+                ✓ Analysis completed for: <span style="color: #d1fae5;">{current_topic}</span>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
         
         col1, col2 = st.columns([3, 1])
         with col2:
-            if st.button("🔄 Start New Analysis", type="secondary", use_container_width=True):
+            if st.button("🔄 New Analysis", type="secondary", use_container_width=True):
                 # Clear all session state
                 for key in ['complete_data', 'search_query', 'selected_hypothesis', 'selected_gap', 
                            'experiment_results', 'selected_experiment', 'generated_paper']:
                     if key in st.session_state:
                         del st.session_state[key]
-                st.success("✅ Cleared! Enter a new topic below.")
                 st.rerun()
-        st.markdown("---")
+    
+    # Clean, minimal search input
+    st.markdown("""
+    <p style="color: #cbd5e0; font-size: 15px; font-weight: 500; margin-bottom: 10px;">
+        🔍 Enter Your Research Topic
+    </p>
+    """, unsafe_allow_html=True)
     
     search_query = st.text_input(
         "Research Topic",
-        placeholder="e.g., 'machine learning for drug discovery' or 'quantum computing applications'",
-        label_visibility="collapsed"
+        placeholder="e.g., machine learning for drug discovery, quantum computing applications...",
+        label_visibility="collapsed",
+        key="search_input"
     )
     
-    search_button = st.button("🚀 Start Complete Analysis", type="primary", use_container_width=True)
+    search_button = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # Handle search
     if search_button and search_query:
-        with st.spinner("🔄 Running Complete Analysis... This may take 2-3 minutes"):
-            try:
-                system = MultiAgentSystem()
+        # Create progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            # Phase 1: Paper Collection
+            status_text.markdown("""
+            <div style="padding: 10px 15px; border-left: 3px solid #3b82f6; background-color: rgba(59, 130, 246, 0.1);">
+                <p style="color: #93c5fd; margin: 0; font-size: 14px;">📄 Phase 1/4: Collecting research papers...</p>
+            </div>
+            """, unsafe_allow_html=True)
+            progress_bar.progress(10)
+            
+            system = MultiAgentSystem()
+            
+            # Phase 2: Literature Review
+            status_text.markdown("""
+            <div style="padding: 10px 15px; border-left: 3px solid #10b981; background-color: rgba(16, 185, 129, 0.1);">
+                <p style="color: #6ee7b7; margin: 0; font-size: 14px;">📚 Phase 2/4: Analyzing literature...</p>
+            </div>
+            """, unsafe_allow_html=True)
+            progress_bar.progress(30)
+            
+            # Run analysis (this includes all phases)
+            result = asyncio.run(run_async_operations(
+                system, 
+                search_query,
+                max_results=5
+            ))
+            
+            # Phase 3: Gap Analysis
+            status_text.markdown("""
+            <div style="padding: 10px 15px; border-left: 3px solid #f59e0b; background-color: rgba(245, 158, 11, 0.1);">
+                <p style="color: #fcd34d; margin: 0; font-size: 14px;">🔍 Phase 3/4: Identifying research gaps...</p>
+            </div>
+            """, unsafe_allow_html=True)
+            progress_bar.progress(65)
+            
+            # Phase 4: Hypothesis Generation
+            status_text.markdown("""
+            <div style="padding: 10px 15px; border-left: 3px solid #8b5cf6; background-color: rgba(139, 92, 246, 0.1);">
+                <p style="color: #c4b5fd; margin: 0; font-size: 14px;">💡 Phase 4/4: Generating hypotheses...</p>
+            </div>
+            """, unsafe_allow_html=True)
+            progress_bar.progress(90)
+            
+            # Complete
+            complete_data = result["data"]
+            st.session_state['complete_data'] = complete_data
+            st.session_state['search_query'] = search_query
+            
+            progress_bar.progress(100)
+            status_text.markdown("""
+            <div style="padding: 12px 20px; border-left: 3px solid #10b981; background-color: rgba(16, 185, 129, 0.15);">
+                <p style="color: #6ee7b7; margin: 0; font-size: 15px; font-weight: 600;">
+                    ✓ Analysis Complete
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.balloons()
                 
-                # Always run complete analysis
-                result = asyncio.run(run_async_operations(
-                    system, 
-                    search_query,
-                    max_results=5  # Not used for complete analysis
-                ))
-                
-                # Display complete analysis results
-                complete_data = result["data"]
-                
-                # Store complete data in session state to persist across reruns
-                st.session_state['complete_data'] = complete_data
-                st.session_state['search_query'] = search_query
-                
-                st.success("✅ Complete Analysis Finished!")
-                    
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                st.error(f"Error details: {type(e).__name__}")
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+            st.error(f"Error details: {type(e).__name__}")
     
     # Display tabs if we have complete data in session state
     if st.session_state.get('complete_data'):
@@ -222,9 +527,31 @@ def main():
                 
                 st.markdown("---")
             
-            # Show literature review
+            # Show literature review with collapsible sections
             if complete_data.get("literature_review"):
-                st.markdown(complete_data["literature_review"])
+                review_text = complete_data["literature_review"]
+                
+                # Download button for literature review
+                col1, col2 = st.columns([3, 1])
+                with col2:
+                    st.download_button(
+                        label="📥 Download as TXT",
+                        data=review_text,
+                        file_name=f"literature_review_{datetime.now().strftime('%Y%m%d')}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                
+                # Parse into sections
+                sections = parse_literature_review(review_text)
+                
+                if len(sections) > 1:
+                    st.markdown("### 📖 Review Sections (Click to Expand)")
+                    for section_name, section_content in sections.items():
+                        with st.expander(f"📑 {section_name}", expanded=(section_name == "Introduction" or section_name == "Full Review")):
+                            st.markdown(section_content)
+                else:
+                    st.markdown(review_text)
             else:
                 st.warning("No literature review available")
             
@@ -278,7 +605,7 @@ def main():
                     st.success(f"🤖 Analysis by: {gaps_dict['source']}")
             
             # Show summary metrics
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Papers Analyzed", gap_data.get("papers_analyzed", 0))
             with col2:
@@ -286,6 +613,16 @@ def main():
                 st.metric("Total Gaps Found", total_gaps)
             with col3:
                 st.metric("Categories", 4)
+            with col4:
+                # Download button
+                gap_text = gap_data.get("formatted_output", "No gap analysis available")
+                st.download_button(
+                    label="📥 Download",
+                    data=gap_text,
+                    file_name=f"gap_analysis_{datetime.now().strftime('%Y%m%d')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
             
             # Display formatted gap analysis
             st.markdown(gap_data.get("formatted_output", "No gap analysis available"))
@@ -295,29 +632,67 @@ def main():
             hyp_data = complete_data.get("hypotheses", {})
             
             if hyp_data.get("hypotheses"):
+                hypotheses_list = hyp_data.get("hypotheses", [])
+                
                 # Show summary metrics
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Hypotheses Generated", len(hyp_data.get("hypotheses", [])))
+                    st.metric("Hypotheses Generated", len(hypotheses_list))
                 with col2:
-                    hypotheses_list = hyp_data.get("hypotheses", [])
                     avg_score = sum(h.get("overall_score", 0) for h in hypotheses_list) / max(len(hypotheses_list), 1)
                     st.metric("Avg Overall Score", f"{avg_score:.2f}")
                 with col3:
                     avg_novelty = sum(h.get("novelty_score", 0) for h in hypotheses_list) / max(len(hypotheses_list), 1)
                     st.metric("Avg Novelty Score", f"{avg_novelty:.2f}")
                 
-                # Display hypotheses with selection
-                st.markdown("### Select a Hypothesis for Experiment Design")
+                st.markdown("---")
+                
+                # Side-by-side comparison table
+                st.markdown("### 📊 Hypothesis Comparison Table")
+                
+                comparison_data = []
+                for idx, hyp in enumerate(hypotheses_list, 1):
+                    comparison_data.append({
+                        "#": idx,
+                        "Title": hyp.get('title', 'Untitled')[:50] + '...' if len(hyp.get('title', '')) > 50 else hyp.get('title', 'Untitled'),
+                        "Overall": f"{hyp.get('overall_score', 0):.1f}",
+                        "Novelty": f"{hyp.get('novelty_score', 0):.1f}",
+                        "Impact": f"{hyp.get('impact_score', 0):.1f}",
+                        "Feasibility": f"{hyp.get('feasibility_score', 0):.1f}",
+                        "Gap": hyp.get('gap_addressed', 'N/A')[:40] + '...' if len(hyp.get('gap_addressed', '')) > 40 else hyp.get('gap_addressed', 'N/A')
+                    })
+                
+                comparison_df = pd.DataFrame(comparison_data)
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                
+                # Download CSV button
+                csv = comparison_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Comparison as CSV",
+                    data=csv,
+                    file_name=f"hypothesis_comparison_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+                st.markdown("---")
+                
+                # Display hypotheses with selection and color-coded badges
+                st.markdown("### 💡 Detailed Hypotheses (Click to Expand)")
                 
                 for idx, hyp in enumerate(hypotheses_list, 1):
                     with st.expander(f"{'🔴' if hyp.get('priority') == 'HIGH' else '🟡'} Hypothesis {idx}: {hyp.get('title', 'Untitled')}", expanded=(idx==1)):
-                        # Display hypothesis details
-                        novelty = hyp.get('novelty_score', 'N/A')
-                        impact = hyp.get('impact_score', 'N/A')
-                        feasibility = hyp.get('feasibility_score', 'N/A')
+                        # Color-coded score badges
+                        st.markdown("**📊 Performance Scores:**", unsafe_allow_html=True)
                         
-                        st.markdown(f"**📊 Scores:** Novelty: {novelty}/10 | Impact: {impact}/10 | Feasibility: {feasibility}/10")
+                        badges_html = ""
+                        badges_html += get_score_badge(hyp.get('overall_score', 0), 'Overall')
+                        badges_html += get_score_badge(hyp.get('novelty_score', 0), 'Novelty')
+                        badges_html += get_score_badge(hyp.get('impact_score', 0), 'Impact')
+                        badges_html += get_score_badge(hyp.get('feasibility_score', 0), 'Feasibility')
+                        
+                        st.markdown(badges_html, unsafe_allow_html=True)
+                        st.markdown("")
                         
                         if hyp.get('gap_addressed'):
                             st.markdown(f"**🎯 Gap Addressed:** {hyp['gap_addressed']}")
@@ -609,7 +984,7 @@ def main():
                         - **Text (.txt)**: Universal format, open in any editor
                         - **JSON**: Contains paper + metadata, machine-readable
                         
-                        **💡 Pro Tip:** The paper is written in academic style using GPT-3.5-turbo with all your collected research context!
+                        **💡 Pro Tip:** The paper is written in academic style using GPT-4 with all your collected research context!
                         """)
                     
                     # Clear button
@@ -833,11 +1208,10 @@ def display_experiment_results(results: dict):
                 st.markdown("---")
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
-                    if st.button(f"✅ Select This Experiment for Paper", key=f"select_exp_{exp['id']}", use_container_width=True, type="primary"):
+                    if st.button(f"✓ Select This Experiment for Paper", key=f"select_exp_{exp['id']}", use_container_width=True, type="primary"):
                         st.session_state['selected_experiment'] = exp
-                        st.success(f"✅ Selected: {exp['title']}")
-                        st.info("👉 Go to Tab 5 to generate your research paper!")
-                        st.rerun()
+                        st.success(f"✓ Selected: {exp['title']}")
+                        st.info("→ Go to Tab 5 to generate your research paper!")
         
         # Show currently selected experiment
         if st.session_state.get('selected_experiment'):
@@ -858,5 +1232,26 @@ def display_experiment_results(results: dict):
         help="Download all experiment details including datasets, metrics, and models"
     )
 
+def render_footer():
+    """Render footer on all pages"""
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; padding: 25px; background-color: #1e293b; 
+                border-radius: 8px; margin-top: 30px; border-top: 2px solid #3b82f6;">
+        <p style="color: #60a5fa; font-size: 13px; font-weight: 600; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1.5px;">Development Team</p>
+        <p style="color: #cbd5e0; font-size: 15px; margin: 8px 0; line-height: 1.6;">
+            Made by <span style="color: #f1f5f9; font-weight: 600;">Radia Riaz</span>, 
+            <span style="color: #f1f5f9; font-weight: 600;">Amna Alvie</span>, 
+            <span style="color: #f1f5f9; font-weight: 600;">Emaan Riaz</span>, 
+            <span style="color: #f1f5f9; font-weight: 600;">Maheen Alvie</span>
+        </p>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">
+            Gen AI Hackathon 2025
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
 if __name__ == "__main__":
     main()
+    render_footer()

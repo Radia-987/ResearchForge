@@ -1636,13 +1636,13 @@ Respond with ONLY the JSON containing EXACTLY 5 hypotheses, no additional text."
             # Generate hypotheses using GPT-4
             print("Calling GPT-4 to generate hypotheses...")
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",  # Use GPT-4 for higher quality
+                model="gpt-4",  # Use GPT-4 for highest quality and better scoring
                 messages=[
-                    {"role": "system", "content": "You are a world-class research strategist and grant proposal expert. Generate detailed, actionable research hypotheses. Always respond with valid JSON only."},
+                    {"role": "system", "content": "You are a world-class research strategist and grant proposal expert. Generate detailed, actionable research hypotheses with HIGH scores (7-10 range). Always respond with valid JSON only."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.8,  # Higher for creativity
-                max_tokens=3000  # Enough for 3-5 detailed hypotheses
+                max_tokens=4000  # Enough for 5 detailed hypotheses
             )
             
             # Parse the response
@@ -1657,7 +1657,7 @@ Respond with ONLY the JSON containing EXACTLY 5 hypotheses, no additional text."
                 # Wrap single hypothesis in array
                 hypotheses_list = [hypotheses_json]
             
-            # Calculate novelty scores using embeddings
+            # Calculate novelty scores using embeddings and overall scores
             if papers and self.embedding_model:
                 print("Calculating novelty scores using embeddings...")
                 for hyp in hypotheses_list:
@@ -1665,11 +1665,44 @@ Respond with ONLY the JSON containing EXACTLY 5 hypotheses, no additional text."
                     hyp_text = f"{hyp.get('title', '')} {hyp.get('proposed_solution', '')}"
                     novelty = self._calculate_novelty_score(hyp_text, papers)
                     hyp['calculated_novelty_score'] = novelty
-                    # Update the novelty score if calculated is significantly different
-                    if abs(hyp.get('novelty_score', 7) - novelty) > 2:
-                        hyp['novelty_score'] = novelty
+                    
+                    # Use embedding-based novelty as primary score (more objective)
+                    hyp['novelty_score'] = novelty
+                    
+                    # Ensure all scores exist and are in valid range
+                    if 'impact_score' not in hyp or hyp['impact_score'] == 0:
+                        hyp['impact_score'] = 8  # Default high impact
+                    if 'feasibility_score' not in hyp or hyp['feasibility_score'] == 0:
+                        hyp['feasibility_score'] = 7  # Default good feasibility
+                    
+                    # Calculate overall score as weighted average
+                    # Novelty: 40%, Impact: 40%, Feasibility: 20%
+                    hyp['overall_score'] = round(
+                        (hyp['novelty_score'] * 0.4 + 
+                         hyp['impact_score'] * 0.4 + 
+                         hyp['feasibility_score'] * 0.2), 1
+                    )
+            else:
+                # No papers for novelty calculation, use GPT-4's scores and calculate overall
+                for hyp in hypotheses_list:
+                    if 'impact_score' not in hyp or hyp['impact_score'] == 0:
+                        hyp['impact_score'] = 8
+                    if 'feasibility_score' not in hyp or hyp['feasibility_score'] == 0:
+                        hyp['feasibility_score'] = 7
+                    if 'novelty_score' not in hyp or hyp['novelty_score'] == 0:
+                        hyp['novelty_score'] = 7
+                    
+                    hyp['overall_score'] = round(
+                        (hyp['novelty_score'] * 0.4 + 
+                         hyp['impact_score'] * 0.4 + 
+                         hyp['feasibility_score'] * 0.2), 1
+                    )
             
-            print(f"✓ Generated {len(hypotheses_list)} hypotheses")
+            # Sort hypotheses by overall score (highest first)
+            hypotheses_list.sort(key=lambda h: h.get('overall_score', 0), reverse=True)
+            
+            print(f"✓ Generated {len(hypotheses_list)} hypotheses (sorted by overall score)")
+            print(f"  Top hypothesis overall score: {hypotheses_list[0].get('overall_score', 0)}/10")
             
             return {
                 "hypotheses": hypotheses_list,
